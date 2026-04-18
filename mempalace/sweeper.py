@@ -1,26 +1,39 @@
 #!/usr/bin/env python3
 """
-sweeper.py — Tandem miner that guarantees no conversation is silently
-dropped.
+sweeper.py — Message-granular miner that catches what the file-level
+primary miners dropped.
 
-Works alongside miner.py / convo_miner.py via timestamp coordination:
+Algorithm, per session:
 
-    For each session in the transcript dir:
-      cursor = max(timestamp of drawers with matching session_id, "")
-      For each user/assistant message in the jsonl with timestamp > cursor:
-        write one small drawer (message_uuid as deterministic ID)
+    cursor = max(timestamp of sweeper-written drawers for this session_id)
+    For each user/assistant message in the jsonl:
+        if cursor is not None and message.timestamp < cursor: skip
+        else: upsert a drawer keyed by (session_id, message_uuid)
 
 Properties:
-  - Idempotent: rerunning on a fully-mined palace is a no-op.
-  - Resume-safe: crash mid-sweep → next run picks up from max-timestamp.
-  - Coordinates with primary miners for free: whichever got further
-    advances the cursor; the other starts from there next time.
+
+  - Idempotent on its own writes: rerunning is a no-op because drawer
+    IDs are deterministic and existence is pre-checked before counting.
+  - Resume-safe: a crash mid-sweep is recovered on the next run — the
+    cursor advances to the last ingested timestamp and re-attempts at
+    that boundary are de-duped by the deterministic ID.
+  - Tie-break safe: uses ``< cursor`` (not ``<=``), so if multiple
+    messages share the max timestamp and only some were ingested, the
+    rest are still picked up on re-run.
   - No size caps: each drawer holds one exchange, ~1-5 KB.
+
+Coordination with the primary file-level miners (``miner.py`` /
+``convo_miner.py``) is limited: those miners chunk at a fixed char size
+and do not currently stamp ``session_id``/``timestamp`` metadata that
+the sweeper can key off. In practice the sweeper coordinates with its
+own prior runs, and may ingest content that also got chunked into
+primary-miner drawers (under different IDs). Follow-up: add uniform
+``ingest_mode`` + message metadata to the primary miners so dedup spans
+both paths.
 
 Usage:
     from mempalace.sweeper import sweep
     result = sweep("/path/to/session.jsonl", "/path/to/palace")
-    # result: {"drawers_added": N, "drawers_skipped": M, "cursor": ts}
 """
 
 from __future__ import annotations
@@ -181,33 +194,67 @@ def sweep(jsonl_path: str, palace_path: str, source_label: Optional[str] = None)
     """Ingest every user/assistant message not already represented.
 
     For each message in the jsonl:
-      - If timestamp <= cursor for that session, skip (already saved by
-        us or by primary miner).
+      - If timestamp < cursor for that session, skip (strictly earlier
+        than anything already in the palace — already covered).
+      - At timestamp == cursor we do NOT skip, because multiple messages
+        can share the same ISO-8601 timestamp; if only some of them were
+        ingested before a crash, a `<= cursor` skip would lose the rest
+        forever. Deterministic drawer IDs make re-attempting at the
+        cursor boundary safe (existing rows are found via a pre-flight
+        `get(ids=...)` and counted as "already present", not "added").
       - Else, upsert a drawer with deterministic ID so reruns dedupe.
 
-    Returns a summary dict: {drawers_added, drawers_skipped, cursor_by_session}.
+    Returns ``{drawers_added, drawers_already_present, drawers_skipped,
+    drawers_upserted, cursor_by_session}``:
+
+    * ``drawers_added`` — rows that did not exist before this sweep.
+    * ``drawers_already_present`` — rows whose deterministic ID was
+      already in the palace and got rewritten idempotently.
+    * ``drawers_skipped`` — records skipped by the cursor (strictly
+      earlier than what's already stored).
+    * ``drawers_upserted`` — total writes = added + already_present.
     """
     collection = get_collection(palace_path, create=True)
     cursors: dict = {}
 
     drawers_added = 0
+    drawers_already_present = 0
     drawers_skipped = 0
 
-    batch_ids = []
-    batch_docs = []
-    batch_metas = []
+    batch_ids: list[str] = []
+    batch_docs: list[str] = []
+    batch_metas: list[dict] = []
     BATCH_SIZE = 64
 
     def _flush():
-        nonlocal drawers_added
+        nonlocal drawers_added, drawers_already_present
         if not batch_ids:
             return
+        # Pre-flight: which IDs in this batch are already present?
+        # Upsert is idempotent on data but counts as "added" would lie;
+        # this pre-query makes the metric honest (Copilot PR 998 review).
+        try:
+            existing = collection.get(ids=list(batch_ids), include=[])
+            # Chroma returns a dict; typed backends return GetResult — the
+            # compat shim makes ``.get("ids")`` work on both.
+            present = set(existing.get("ids") or [])
+        except Exception as exc:
+            logger.warning(
+                "sweeper: existence pre-check failed (%s); "
+                "counting all batch rows as new (metric may over-count on reruns).",
+                exc,
+            )
+            present = set()
+        new_count = sum(1 for rid in batch_ids if rid not in present)
+        already_count = len(batch_ids) - new_count
+
         collection.upsert(
             ids=batch_ids,
             documents=batch_docs,
             metadatas=batch_metas,
         )
-        drawers_added += len(batch_ids)
+        drawers_added += new_count
+        drawers_already_present += already_count
         batch_ids.clear()
         batch_docs.clear()
         batch_metas.clear()
@@ -218,7 +265,7 @@ def sweep(jsonl_path: str, palace_path: str, source_label: Optional[str] = None)
             cursors[sid] = get_palace_cursor(collection, sid)
 
         cursor = cursors[sid]
-        if cursor is not None and rec["timestamp"] <= cursor:
+        if cursor is not None and rec["timestamp"] < cursor:
             drawers_skipped += 1
             continue
 
@@ -245,6 +292,8 @@ def sweep(jsonl_path: str, palace_path: str, source_label: Optional[str] = None)
 
     return {
         "drawers_added": drawers_added,
+        "drawers_already_present": drawers_already_present,
+        "drawers_upserted": drawers_added + drawers_already_present,
         "drawers_skipped": drawers_skipped,
         "cursor_by_session": cursors,
     }
@@ -253,12 +302,16 @@ def sweep(jsonl_path: str, palace_path: str, source_label: Optional[str] = None)
 def sweep_directory(dir_path: str, palace_path: str) -> dict:
     """Sweep every .jsonl file in a directory (recursive).
 
-    Returns aggregated summary across all files.
+    Returns aggregated summary across all files. ``files_attempted``
+    includes files that raised, so the count reflects discovery rather
+    than only successes; ``files_succeeded`` is the subset that
+    completed without error.
     """
     dir_p = Path(dir_path).expanduser().resolve()
     files = sorted(dir_p.rglob("*.jsonl"))
 
     total_added = 0
+    total_already_present = 0
     total_skipped = 0
     per_file = []
 
@@ -272,18 +325,22 @@ def sweep_directory(dir_path: str, palace_path: str) -> dict:
             failures.append({"file": str(f), "error": str(exc)})
             continue
         total_added += result["drawers_added"]
+        total_already_present += result.get("drawers_already_present", 0)
         total_skipped += result["drawers_skipped"]
         per_file.append(
             {
                 "file": str(f),
                 "added": result["drawers_added"],
+                "already_present": result.get("drawers_already_present", 0),
                 "skipped": result["drawers_skipped"],
             }
         )
 
     return {
-        "files_processed": len(per_file),
+        "files_attempted": len(files),
+        "files_succeeded": len(per_file),
         "drawers_added": total_added,
+        "drawers_already_present": total_already_present,
         "drawers_skipped": total_skipped,
         "per_file": per_file,
         "failures": failures,

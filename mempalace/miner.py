@@ -66,8 +66,11 @@ MIN_CHUNK_SIZE = 50  # skip tiny chunks
 MAX_FILE_SIZE = 500 * 1024 * 1024  # 500 MB — skip files larger than this.
 # Long Claude Code sessions and large transcript exports routinely exceed
 # 10 MB. The cap exists as a defensive rail against pathological binary
-# files, not as a limit on legitimate text. Chunking at 800 chars per
-# drawer means source size does not affect storage or embedding cost.
+# files, not as a limit on legitimate text. Per-drawer size is bounded
+# by CHUNK_SIZE, but larger sources still produce proportionally more
+# drawers and therefore more storage, embedding, and processing work —
+# and file reads are not streamed (the whole content is loaded into
+# memory before chunking), so memory use scales with source size too.
 
 
 # =============================================================================

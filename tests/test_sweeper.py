@@ -225,6 +225,72 @@ class TestSweeperTandem:
             "coordination is broken."
         )
 
+    def test_sweep_recovers_untaken_message_at_cursor_timestamp(self, tmp_path):
+        """Regression for Copilot PR #998 review: with a `<= cursor` skip,
+        any message sharing the max timestamp but not yet ingested (e.g.
+        crash mid-batch) would be lost forever. The skip must be `<` and
+        tie-break via deterministic drawer ID.
+
+        Scenario: three messages share timestamp T. First sweep ingests
+        two of them and the process dies before the third. Second sweep
+        must pick up the third — not skip it because cursor == T.
+        """
+        from mempalace.palace import get_collection
+        from mempalace.sweeper import (
+            _drawer_id_for_message,
+            parse_claude_jsonl,
+            sweep,
+        )
+
+        shared_ts = "2026-04-18T11:00:00Z"
+        lines = [
+            {
+                "type": "user",
+                "timestamp": shared_ts,
+                "sessionId": "s-tie",
+                "uuid": f"u-{i}",
+                "message": {"role": "user", "content": f"msg {i}"},
+            }
+            for i in range(3)
+        ]
+        jsonl_path = tmp_path / "tied.jsonl"
+        jsonl_path.write_text("\n".join(json.dumps(x) for x in lines) + "\n")
+
+        palace_path = str(tmp_path / "palace")
+        # Simulate a partial ingest: write 2 of 3 directly via the backend
+        # with the same drawer IDs the sweeper would use.
+        col = get_collection(palace_path, create=True)
+        recs = list(parse_claude_jsonl(str(jsonl_path)))
+        partial_ids = [_drawer_id_for_message(r["session_id"], r["uuid"]) for r in recs[:2]]
+        col.upsert(
+            ids=partial_ids,
+            documents=[f"USER: {r['content']}" for r in recs[:2]],
+            metadatas=[
+                {
+                    "session_id": r["session_id"],
+                    "timestamp": r["timestamp"],
+                    "message_uuid": r["uuid"],
+                    "role": r["role"],
+                    "ingest_mode": "sweep",
+                }
+                for r in recs[:2]
+            ],
+        )
+
+        # Now run the sweeper. It must pick up the 3rd message, not skip
+        # it because cursor == its timestamp.
+        result = sweep(str(jsonl_path), palace_path)
+        assert result["drawers_added"] == 1, (
+            f"Sweeper lost the untaken message at cursor timestamp. "
+            f"Expected drawers_added=1 (the 3rd record), got "
+            f"{result['drawers_added']}. Cursor skip is still `<=` "
+            "instead of `<`, or tie-break via drawer-id is broken."
+        )
+        assert result["drawers_already_present"] == 2, (
+            f"Expected 2 drawers already present (the partial ingest), "
+            f"got {result['drawers_already_present']}."
+        )
+
 
 class TestSweeperDrawerMetadata:
     """Each drawer must carry the metadata the tandem-miner coordination

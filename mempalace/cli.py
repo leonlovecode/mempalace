@@ -147,10 +147,14 @@ def cmd_mine(args):
 
 
 def cmd_sweep(args):
-    """Sweep a transcript file or directory for anything the primary
-    miner missed. Coordinates via max(timestamp) per session_id, so
-    this is safe to run alongside the file-level miners — neither
-    duplicates the other's work.
+    """Sweep a transcript file or directory.
+
+    The sweeper deduplicates against its own prior writes via
+    deterministic drawer IDs + a timestamp cursor. It does NOT currently
+    coordinate with the file-level miners (miner.py / convo_miner.py) —
+    those produce char-chunked drawers without compatible message
+    metadata, so running both miners may store overlapping content under
+    different IDs.
     """
     from .sweeper import sweep, sweep_directory
 
@@ -160,15 +164,17 @@ def cmd_sweep(args):
     if os.path.isfile(target):
         result = sweep(target, palace_path)
         print(
-            f"  Swept {target}: +{result['drawers_added']} drawers, "
-            f"{result['drawers_skipped']} already present."
+            f"  Swept {target}: +{result['drawers_added']} new, "
+            f"{result['drawers_already_present']} already present, "
+            f"{result['drawers_skipped']} skipped (< cursor)."
         )
     elif os.path.isdir(target):
         result = sweep_directory(target, palace_path)
         print(
-            f"  Swept {result['files_processed']} files from {target}: "
-            f"+{result['drawers_added']} drawers, "
-            f"{result['drawers_skipped']} already present."
+            f"  Swept {result['files_succeeded']}/{result['files_attempted']} "
+            f"files from {target}: +{result['drawers_added']} new, "
+            f"{result['drawers_already_present']} already present, "
+            f"{result['drawers_skipped']} skipped (< cursor)."
         )
         failures = result.get("failures") or []
         if failures:
