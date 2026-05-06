@@ -255,12 +255,8 @@ def test_concurrent_writers_serialize(tmp_path, monkeypatch):
     ctx = _get_mp_context()
     result_q = ctx.Queue()
 
-    p1 = ctx.Process(
-        target=_slow_writer_target, args=(palace, str(tmp_path), 1, result_q)
-    )
-    p2 = ctx.Process(
-        target=_slow_writer_target, args=(palace, str(tmp_path), 2, result_q)
-    )
+    p1 = ctx.Process(target=_slow_writer_target, args=(palace, str(tmp_path), 1, result_q))
+    p2 = ctx.Process(target=_slow_writer_target, args=(palace, str(tmp_path), 2, result_q))
     p1.start()
     # Tiny stagger so p1 wins the race deterministically; without it the
     # OS scheduler can pick either, which is also a valid outcome but
@@ -272,9 +268,7 @@ def test_concurrent_writers_serialize(tmp_path, monkeypatch):
 
     outcomes = [result_q.get(timeout=1) for _ in range(2)]
     statuses = sorted(o[0] for o in outcomes)
-    assert statuses == ["busy", "ok"], (
-        f"expected one ok + one busy, got {outcomes}"
-    )
+    assert statuses == ["busy", "ok"], f"expected one ok + one busy, got {outcomes}"
 
 
 def test_read_path_does_not_acquire_lock(tmp_path, monkeypatch):
@@ -319,9 +313,9 @@ def test_read_path_does_not_acquire_lock(tmp_path, monkeypatch):
             if method is None:
                 continue
             src = inspect.getsource(method)
-            assert "_write_lock" not in src, (
-                f"{read_attr} must NOT acquire the write lock (read path)"
-            )
+            assert (
+                "_write_lock" not in src
+            ), f"{read_attr} must NOT acquire the write lock (read path)"
     finally:
         open(release, "w").close()
         holder.join(timeout=5)

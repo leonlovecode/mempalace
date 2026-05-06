@@ -194,9 +194,9 @@ def test_reentrant_same_thread_passes_through(tmp_path, monkeypatch):
         child = ctx.Process(target=_try_acquire_expect_busy, args=(palace, result_q))
         child.start()
         child.join(timeout=5)
-        assert result_q.get(timeout=1) == "busy", (
-            "outer lock should still be held by parent after inner re-entrant exit"
-        )
+        assert (
+            result_q.get(timeout=1) == "busy"
+        ), "outer lock should still be held by parent after inner re-entrant exit"
 
 
 def _try_acquire_expect_busy(palace_path, result_q):
