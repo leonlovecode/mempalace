@@ -593,7 +593,7 @@ def status(palace_path=None) -> dict:
 # ---------------------------------------------------------------------------
 
 
-def _close_chroma_handles(palace_path: str, backend: ChromaBackend | None = None) -> None:
+def _close_chroma_handles(palace_path: str, backend: "ChromaBackend | None" = None) -> None:
     """Drop ChromaBackend + chromadb singleton caches so OS mmap handles release.
 
     When ``backend`` is provided, close the live instance so rollback/restore
