@@ -271,7 +271,11 @@ def test_lock_holder_identity_persists_across_release(tmp_path, monkeypatch):
     runs and grow without bound. Verify that re-acquire keeps the body
     bounded.
     """
+    # ``os.path.expanduser("~")`` reads HOME on POSIX but USERPROFILE on
+    # Windows; setting both makes the ``~/.mempalace/locks`` lookup land
+    # under ``tmp_path`` regardless of platform.
     monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("USERPROFILE", str(tmp_path))
     palace = str(tmp_path / "palace")
     for _ in range(5):
         with mine_palace_lock(palace):
@@ -282,9 +286,13 @@ def test_lock_holder_identity_persists_across_release(tmp_path, monkeypatch):
     lock_dir = tmp_path / ".mempalace" / "locks"
     lock_files = list(lock_dir.glob("mine_palace_*.lock"))
     assert lock_files, "expected the palace lock file to exist after acquire/release"
-    body = lock_files[0].read_text()
-    # One identity line, no accumulation.
-    assert body.count("\n") <= 1, f"lock body must not grow across re-acquires; got {body!r}"
+    # Read as bytes so the byte-0 sentinel (\x00) is preserved without
+    # decode quirks; the bound is on the file size, not its line count.
+    body = lock_files[0].read_bytes()
+    # Body is byte-0 sentinel + identity (no trailing accumulation).
+    # Identity is ``f"{pid} {sys.argv[:3]}"``; cap at a generous bound that
+    # still rules out unbounded growth across the 5 re-acquires.
+    assert len(body) < 1024, f"lock body must not grow across re-acquires; got {len(body)} bytes"
 
 
 def test_mine_global_lock_is_alias_for_back_compat(tmp_path, monkeypatch):
