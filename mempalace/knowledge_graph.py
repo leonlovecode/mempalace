@@ -221,6 +221,24 @@ class KnowledgeGraph:
                 self._connection.close()
                 self._connection = None
 
+    def __enter__(self):
+        """Allow KnowledgeGraph to be used as a context manager."""
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        """Close the SQLite connection when leaving a context manager block."""
+        self.close()
+        return False
+
+    def __del__(self):
+        """Best-effort cleanup for callers/tests that forget to call close()."""
+        try:
+            self.close()
+        except Exception:
+            # Destructors must never raise, especially during interpreter
+            # shutdown when module globals may already be partially torn down.
+            pass
+
     def _entity_id(self, name: str) -> str:
         return name.lower().replace(" ", "_").replace("'", "")
 

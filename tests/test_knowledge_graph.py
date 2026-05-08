@@ -6,6 +6,8 @@ timeline, stats, and edge cases (duplicate triples, ID collisions).
 """
 
 import pytest
+import sqlite3
+from mempalace.knowledge_graph import KnowledgeGraph
 
 
 class TestEntityOperations:
@@ -299,3 +301,24 @@ class TestTemporalDateTimeCompatibility:
                 "Acme",
                 ended="2026-05-06T20:30:00-05:00",
             )
+
+
+class TestKnowledgeGraphConnectionCleanup:
+    def test_close_closes_connection_and_resets_handle(self, tmp_path):
+        kg = KnowledgeGraph(str(tmp_path / "kg.sqlite3"))
+        conn = kg._conn()
+
+        kg.close()
+
+        assert kg._connection is None
+        with pytest.raises(sqlite3.ProgrammingError):
+            conn.execute("SELECT 1")
+
+    def test_context_manager_closes_connection(self, tmp_path):
+        with KnowledgeGraph(str(tmp_path / "kg.sqlite3")) as kg:
+            conn = kg._conn()
+            kg.add_entity("Alice")
+
+        assert kg._connection is None
+        with pytest.raises(sqlite3.ProgrammingError):
+            conn.execute("SELECT 1")
