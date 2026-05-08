@@ -87,8 +87,8 @@ def sanitize_kg_value(value: str, field_name: str = "value") -> str:
 # (as_of, valid_from, valid_to, ended).
 #
 # The KG stores temporal values as TEXT. Lexicographic comparisons are only
-# safe when all datetime values use one canonical shape. Accept full dates
-# for legacy compatibility and exact UTC datetimes for sub-day precision.
+# safe when datetime values use one canonical shape. Accept full dates for
+# legacy compatibility and exact UTC datetimes for sub-day precision.
 #
 # Accepted:
 #   YYYY-MM-DD
