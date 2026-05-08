@@ -42,6 +42,7 @@ import sqlite3
 import threading
 from datetime import date, datetime
 from pathlib import Path
+from typing import Optional
 from .config import sanitize_iso_temporal
 
 
@@ -52,7 +53,7 @@ def _is_date_only_temporal(value: str) -> bool:
     return isinstance(value, str) and len(value) == 10 and value[4] == "-" and value[7] == "-"
 
 
-def _temporal_start_key(value: str | None) -> str | None:
+def _temporal_start_key(value: Optional[str]) -> Optional[str]:
     """Return the comparable instant for a valid_from/as_of value."""
 
     if value is None:
@@ -64,7 +65,7 @@ def _temporal_start_key(value: str | None) -> str | None:
     return value
 
 
-def _temporal_end_key(value: str | None) -> str | None:
+def _temporal_end_key(value: Optional[str]) -> Optional[str]:
     """Return the comparable instant for a valid_to value.
 
     Date-only valid_to values represent the whole day for backward
@@ -80,7 +81,7 @@ def _temporal_end_key(value: str | None) -> str | None:
     return value
 
 
-def _triple_valid_at(valid_from: str | None, valid_to: str | None, as_of: str) -> bool:
+def _triple_valid_at(valid_from: Optional[str], valid_to: Optional[str], as_of: str) -> bool:
     as_of_key = _temporal_start_key(as_of)
     valid_from_key = _temporal_start_key(valid_from)
     valid_to_key = _temporal_end_key(valid_to)
