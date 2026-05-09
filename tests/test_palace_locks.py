@@ -30,7 +30,6 @@ def _get_mp_context():
     This is slower than ``fork`` but much safer for the full test suite on
     Linux/macOS, and it matches the behavior Windows already used.
     """
-
     return multiprocessing.get_context("spawn")
 
 
@@ -183,25 +182,21 @@ def test_reentrant_same_thread_passes_through(tmp_path, monkeypatch):
     """
     monkeypatch.setenv("HOME", str(tmp_path))
     palace = str(tmp_path / "palace")
-
     with mine_palace_lock(palace):
         # Re-enter from the same thread — must yield without raising or hanging.
         with mine_palace_lock(palace):
             pass
-
         # After the inner exits, the outer is still held. Use spawn so the
         # child does not inherit the parent's open lock fd or SQLite/Chroma
         # process state from the full test suite.
         ctx = _get_mp_context()
         result_q = ctx.Queue()
         child = ctx.Process(target=_try_acquire_expect_busy, args=(palace, result_q))
-
         try:
             child.start()
             assert result_q.get(timeout=10) == "busy", (
                 "outer lock should still be held by parent after inner re-entrant exit"
             )
-
             child.join(timeout=5)
             assert child.exitcode == 0
         finally:
